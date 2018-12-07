@@ -1,26 +1,74 @@
 # testwang - because randomly-failing tests hurt everyone's brain
 
-This is a tool to help out when you've got some randomly failing
-python tests.  It helps by running the tests again in pytest, to let
-you pin down which ones really are randomly failing, and which are
-not.
+`testwang` is a tool that helps out when you've got some randomly
+failing python tests, simply by running the tests again in `pytest`,
+potentially multiple times, and reporting on the results nicely.
+
+It takes as input a text file containing a list of tests in the dotted
+path format found in a Jenkins `testReport`.  It runs those tests
+again, and for each test tells you if it consistently PASSED, FAILED,
+SKIPPED, etc. or if the results were MIXED (and if so, how mixed).  It
+can show you the detail of that if you want, and it can show you the
+full `pyest` output if you want - though by default it does neither of
+those things.  Aaaand... that's basically it.
 
 ## Motivation
 
-While working on a project with a number of randomly failing tests in
-the `develop` branch, those tests show up as noise when running CI on
-any feature branch.  Using
-[compare_jenkins](https://github.com/gimbo/compare_jenkins) helps, by
-filtering out tests which failed in both branches (that also helps by
-eliminating tests which are _always_ failing in `develop` of course) -
-but then you can still end up with some tests that (randomly) failed
-in the feature branch but not `develop`.
+If you're ever in the unfortunate position of working on a codebase
+which has some randomly failing tests that nobody _quite_ has time to
+fix, those tests are noise.  This is annoying.  Let's say you're
+working on some feature branch, and you run CI on it, and you get 10
+failing tests...  Which are real failures introduced by your branch,
+and which are just random noise?
 
-So you need to run just those tests vs the feature branch and see if
-they pass (at least some of the time). Doing that yourself is
-_boring_.  Let `testwang` do the boring thing for you.
+As a first stab, the
+[jen_compare](https://github.com/gimbo/compare_jenkins) tool can help,
+e.g. by showing you only the tests which failed on your branch's CI
+run but not on `develop`'s last run (say).  So maybe after running
+that you end up with 4 tests which failed in your branch but not on
+`develop` (at least, not _last time_).
+
+OK, that helps - but it's quite possible some of those failures are
+"randos" and can be ignored. The question is: which ones?  To be
+certain, you need to run them all again.  In fact, to be _really_
+certain, in the face of the crippling anxiety introduced into your
+life by all these stupid random failures on this blessed project, you
+probably want to run them again _a few times_.  And doing that
+yourself is _boring_.  Let `testwang` do the boring thing for you.
+
+## Installation
+
+The simplest way is probably:
+
+    pip install -e git+https://github.com/gimbo/testwang.git#egg=testwang
+
+Alternatively, clone/download this repo and run `setup.py install` if
+that's your thing.
+
+Either way you should end up with a `testwang` executable in your
+path.
+
+### Requirements
+
+`testwang` (currently) has no third-party package requirements.  That
+may well change.
+
+I believe it to be compatible with pythons 2.7 and 3.4+, but I haven't
+got round to putting in place structures to verify that yet.
 
 ## Usage
+
+### Example
+
+    testwang /tmp/failures.txt -N3 --reuse-db -n4 -e
+
+Here we tell `testwang` to run the tests in `/tmp/failures.txt` three
+times (`-N3`), and to echo `pytest`'s output as it runs (`-e`); we
+tell `pytest` to reuse an existing DB and to use four parallel test
+workers (the `--reuse-db` and `-n 4` args are passed to `pytest`
+unchanged).
+
+### Input file
 
 `testwang` takes as input a file containing a list of test paths (as
 might be found in a Jenkins `testReport`, say), e.g.:
@@ -29,27 +77,41 @@ might be found in a Jenkins `testReport`, say), e.g.:
     apps.other.tests.test_weird_other_thing.NastyTest.test_weirdness
     tests.integration.test_pathways.test_happy_path
 
-and (at time of writing) it simply runs all those tests again, once,
-via pytest. The next stage will be to run them multiple times,
-collecting info on how many times each fails and reporting on that.
-There may be more advanced possibilities to come after that, we'll
-see...
+(These can't be used directly with `pytest`, so part of `testwang`'s
+job is to convert them into something that can, e.g.:
+
+    apps/thing/tests/test_some_thing.py::SomeThingTest::test_whatever
+
+We may allow this format in the input file in the future too, as that
+seems an obvious thing to want to do.)
+
+Blank lines or lines starting with `#` are ignored.
+
+### Arguments/options
 
 Run the script with the `-h`/`--help` for details, but note in
 particular:
 
-* The `-P`/`--python` argument lets you specify which python
-  executable to use to run `pytest`; this allows you to e.g. run using
-  a given virtualenv's version python in order to pick up any needed
-  packages (e.g., perhaps, the system under test).
+* The `-P`/`--python` argument specifies which python executable to
+  use when running `pytest`; this allows you to e.g. run using a given
+  virtualenv's python in order to pick up any needed packages (maybe
+  including the system under test).
 
   However, you may not need to do that: by default, `testwang` just
   uses whatever `python` was used to launch it - so if you `pip`
   install `testwang` straight into your virtualenv and run it from
   there, it should use the right python automatically.
 
-* By default, `pytest`'s output is suppressed. Use the `-e`/`--echo`
-  argument to see it.
+* The `-N`/`--cycles` argument specifies how many cycles to run; the
+  default is just once.
+
+* The `-R`/`--report-cycles` argument activates reporting of per-cycle
+  results at the end, rather that just the overall result for each
+  test.
+
+* By default, `pytest`'s output is suppressed. The `-e`/`--echo`
+  argument shows it for all cycles, and the `-E`/`--echo-final` shows
+  it for only the final cycle.
 
 * Unrecognized arguments are passed through to `pytest` unchanged,
   allowing control over database reuse/creation, parallel execution
@@ -59,12 +121,16 @@ particular:
 * Your environment is passed through to `pytest` unchanged - so
   `$PYTEST_ADDOPTS` will be picked up, e.g.
 
-### Example
+## Future work
 
-    $ testwang /tmp/failures.txt --reuse-db -n 4 -e
-
-Here `-e` tells `testwang` to echo `pytest`'s output, and the other
-options are passed through to `ptest` unchanged.
+* Option to stop cycling a given test on its first PASS.
+* Option to report on only the FAILs at the end.
+* Time estimates for all runs except first, based on previous runs.
+* Be clever about `--create-db`: only pass to `pytest` on first cycle.
+* Allow tests to be specified in pytest format too.
+* Colours!
+* Prove/document compatability across python versions.
+* Maybe more...
 
 ## The name
 

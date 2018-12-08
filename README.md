@@ -105,6 +105,12 @@ particular:
 * The `-N`/`--cycles` argument specifies how many cycles to run; the
   default is just once.
 
+* The `-F`/`--failure-focus` argument specifies that as soon as a
+  given test passes, it needn't be run again in later cycles; it also
+  specifies that only tests that consistently FAILED are reported at
+  the end.  As the name suggests, this mode is useful for focussing
+  particularly on failing tests.
+
 * The `-R`/`--report-cycles` argument activates reporting of per-cycle
   results at the end, rather that just the overall result for each
   test.
@@ -123,8 +129,7 @@ particular:
 
 ## Future work
 
-* Option to stop cycling a given test on its first PASS.
-* Option to report on only the FAILs at the end.
+* Option to stop cycling early if we reach a (thresholded) fixed point.
 * Time estimates for all runs except first, based on previous runs.
 * Be clever about `--create-db`: only pass to `pytest` on first cycle.
 * Allow tests to be specified in pytest format too.

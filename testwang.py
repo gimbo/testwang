@@ -153,22 +153,35 @@ def run_tests(tests, args, pytest_args):
     results = {
         test: ResultsForOneTest() for test in tests
     }
+    active_tests = list(tests)
     for cycle in range(args.cycles):
         cycle_results = run_tests_cycle(
-            tests,
+            active_tests,
             args,
             pytest_args,
             cycle,
         )
-        for test in tests:
+        for test in active_tests:
             if test in cycle_results:
                 results[test].append(cycle_results[test])
+        if args.failure_focus:
+            active_tests = [
+                test for test in active_tests
+                if (
+                    test not in cycle_results  # No result: problem?
+                    or cycle_results[test].outcome != 'PASSED'
+                )
+            ]
     return results
 
 
 def run_tests_cycle(tests, args, pytest_args, cycle):
     if args.cycles > 1:
-        print('Test run cycle {} of {}'.format(cycle + 1, args.cycles))
+        print('Test cycle {:2} of {:2}  --  {} tests to run'.format(
+            cycle + 1,
+            args.cycles,
+            len(tests),
+        ))
     command = construct_tests_run_command(tests, args, pytest_args)
     final_cycle = cycle == args.cycles - 1
     echoing = args.echo or (args.echo_final and final_cycle)
@@ -226,6 +239,8 @@ def report_overall_results(args, tests, results, elapsed):
     ))
     for test in tests:
         test_results = results[test]
+        if args.failure_focus and test_results.overall_outcome != 'FAILED':
+            continue
         print(template.format(test_results.overall_outcome, test))
         if args.report_cycles:
             report_test_cycle_result(
@@ -291,6 +306,13 @@ def parse_args():
         default=1,
         type=positive_int,
         help='How many times to run the tests; default is just once',
+    )
+    parser.add_argument(
+        '-F', '--failure-focus',
+        action='store_true',
+        help="""
+            As soon as a test passes once, don't run it again in later cycles.
+        """,
     )
     parser.add_argument(
         '-R', '--report-cycles',

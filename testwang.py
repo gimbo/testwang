@@ -86,12 +86,15 @@ def main():
 def testwang(args, pytest_args):
     start = time.time()
     try:
-        tests, results = collect_and_run_tests(args, pytest_args)
+        tests, results, actual_cycles = collect_and_run_tests(
+            args,
+            pytest_args,
+        )
     except TestSpecModuleNotFound as ex:
         print('Test not found: {}'.format(ex.path))
         sys.exit(1)
     elapsed = time.time() - start
-    report_overall_results(args, tests, results, elapsed)
+    report_overall_results(args, tests, results, actual_cycles, elapsed)
 
 
 def collect_and_run_tests(args, pytest_args):
@@ -100,8 +103,8 @@ def collect_and_run_tests(args, pytest_args):
         print('No tests found.')
         return
     report_tests_to_run(tests)
-    results = run_tests(tests, args, pytest_args)
-    return tests, results
+    results, actual_cycles = run_tests(tests, args, pytest_args)
+    return tests, results, actual_cycles
 
 
 def collect_tests(args):
@@ -162,17 +165,19 @@ def run_tests(tests, args, pytest_args):
         test: ResultsForOneTest() for test in tests
     }
     active_tests = list(tests)
+    actual_cycles = 0
     for cycle in range(args.cycles):
         if not active_tests:
             print('No tests to run')
             break
-        cycle_results = run_tests_cycle(
+        cycle_results = run_and_report_tests_cycle(
             active_tests,
             results,
             args,
             pytest_args,
             cycle,
         )
+        actual_cycles += 1
         for test in active_tests:
             if test in cycle_results:
                 results[test].append(cycle_results[test])
@@ -184,31 +189,48 @@ def run_tests(tests, args, pytest_args):
                     or cycle_results[test].outcome != 'PASSED'
                 )
             ]
+    return results, actual_cycles
+
+
+def run_and_report_tests_cycle(tests, results, args, pytest_args, cycle):
+    if args.cycles > 1:
+        indent = report_start_of_test_run(
+            tests,
+            results,
+            args.cycles,
+            cycle,
+        )
+    else:
+        indent = ''
+    duration, results = run_tests_cycle(
+        tests,
+        results,
+        args,
+        pytest_args,
+        cycle,
+    )
+    print(indent + '{:.2f}s for cycle'.format(duration))
     return results
 
 
 def run_tests_cycle(tests, results, args, pytest_args, cycle):
-    if args.cycles > 1:
-        report_start_of_test_run(tests, results, args.cycles, cycle)
     command = construct_tests_run_command(tests, args, pytest_args)
     final_cycle = cycle == args.cycles - 1
     echoing = args.echo or (args.echo_final and final_cycle)
-    run_command(command, echo=echoing)
-    return parse_json_results(args.json_path)
+    duration, _ = run_timed(run_command, command, echo=echoing)
+    results = parse_json_results(args.json_path)
+    return duration, results
 
 
 def report_start_of_test_run(tests, results, cycles, cycle):
     time_estimate = estimate_cycle_time(tests, results)
-    if cycle > 1:
-        estimate = ', time estimate for cycle: {:5.2f}s'.format(time_estimate)
+    if cycle > 0:
+        estimate = ', time estimate: {:5.2f}s'.format(time_estimate)
     else:
         estimate = ''
-    print('Test cycle {:2} of {:2}  --  {} tests to run {}'.format(
-        cycle + 1,
-        cycles,
-        len(tests),
-        estimate,
-    ))
+    header = 'Test cycle {:2} of {:2}  --  '.format(cycle + 1, cycles)
+    print('{}{} tests to run{}'.format(header, len(tests), estimate))
+    return ' ' * len(header)
 
 
 def estimate_cycle_time(tests, prior_results):
@@ -251,7 +273,7 @@ def parse_json_results_one_test(test_json):
     return name, ResultForOneTestRun(outcome, duration)
 
 
-def report_overall_results(args, tests, results, elapsed):
+def report_overall_results(args, tests, results, actual_cycles, elapsed):
 
     longest_outcome = max((
         len(outcome) for outcome in all_test_result_outcomes(results)
@@ -259,7 +281,7 @@ def report_overall_results(args, tests, results, elapsed):
     template = '{{:{}}} {{}}s'.format(longest_outcome)
 
     print('\nRan {} {} of tests in {:5.2f}s\n'.format(
-        args.cycles,
+        actual_cycles,
         'cycle' if args.cycles == 1 else 'cycles',
         elapsed,
     ))
@@ -403,6 +425,13 @@ def positive_int(x):
 
 def unexpand_user(path):
     return path.replace(os.path.expanduser('~'), '~')
+
+
+def run_timed(fn, *args, **kwargs):
+    started = time.time()
+    result = fn(*args, **kwargs)
+    duration = time.time() - started
+    return duration, result
 
 
 if __name__ == '__main__':

@@ -41,6 +41,9 @@ class ResultsForOneTest:
     def __iter__(self):
         return iter(self.cycle_results)
 
+    def __len__(self):
+        return len(self.cycle_results)
+
     @property
     def overall_outcome(self):
         try:
@@ -65,6 +68,11 @@ class ResultsForOneTest:
     @property
     def total_duration(self):
         return sum((result.duration for result in self))
+
+    @property
+    def mean_duration(self):
+        cycles = len(self)
+        return self.total_duration / cycles if cycles else 0
 
     def append(self, result_for_one_test_run):
         self.cycle_results.append(result_for_one_test_run)
@@ -155,8 +163,12 @@ def run_tests(tests, args, pytest_args):
     }
     active_tests = list(tests)
     for cycle in range(args.cycles):
+        if not active_tests:
+            print('No tests to run')
+            break
         cycle_results = run_tests_cycle(
             active_tests,
+            results,
             args,
             pytest_args,
             cycle,
@@ -175,18 +187,32 @@ def run_tests(tests, args, pytest_args):
     return results
 
 
-def run_tests_cycle(tests, args, pytest_args, cycle):
+def run_tests_cycle(tests, results, args, pytest_args, cycle):
     if args.cycles > 1:
-        print('Test cycle {:2} of {:2}  --  {} tests to run'.format(
-            cycle + 1,
-            args.cycles,
-            len(tests),
-        ))
+        report_start_of_test_run(tests, results, args.cycles, cycle)
     command = construct_tests_run_command(tests, args, pytest_args)
     final_cycle = cycle == args.cycles - 1
     echoing = args.echo or (args.echo_final and final_cycle)
     run_command(command, echo=echoing)
     return parse_json_results(args.json_path)
+
+
+def report_start_of_test_run(tests, results, cycles, cycle):
+    time_estimate = estimate_cycle_time(tests, results)
+    if cycle > 1:
+        estimate = ', time estimate for cycle: {:5.2f}s'.format(time_estimate)
+    else:
+        estimate = ''
+    print('Test cycle {:2} of {:2}  --  {} tests to run {}'.format(
+        cycle + 1,
+        cycles,
+        len(tests),
+        estimate,
+    ))
+
+
+def estimate_cycle_time(tests, prior_results):
+    return sum(prior_results[test].mean_duration for test in tests)
 
 
 def construct_tests_run_command(tests, args, pytest_args):
@@ -268,9 +294,11 @@ def report_test_cycle_result(test_results, longest_outcome):
         print(indented(
             inner_template.format(cycle.outcome, cycle.duration),
         ))
-    print(indented(indented('{:5.2f}s total\n'.format(
-        test_results.total_duration,
-    ))))
+    if len(test_results) > 1:
+        print(indented(indented('{:5.2f}s total, {:5.2f}s mean\n'.format(
+            test_results.total_duration,
+            test_results.mean_duration,
+        ))))
 
 
 def parse_args():

@@ -134,6 +134,9 @@ particular:
 * Be clever about `--create-db`: only pass to `pytest` on first cycle.
 * Allow tests to be specified in pytest format too.
 * Colours!
+* Some tests would be nice; this started as a small hacky script but
+  it's now grown to the point where it really could do with that
+  support.
 * Prove/document compatability across python versions.
 * Maybe more...
 

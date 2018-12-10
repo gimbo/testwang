@@ -29,13 +29,13 @@ class TestSpecModuleNotFound(Exception):
         return '.'.join(self.args[0])
 
 
-class ResultForOneTestRun:
+class ResultForOneTestRun(object):
     def __init__(self, outcome, duration):
         self.outcome = outcome
         self.duration = duration
 
 
-class ResultsForOneTest:
+class ResultsForOneTest(object):
 
     def __init__(self):
         self.cycle_results = []
@@ -80,26 +80,10 @@ class ResultsForOneTest:
         self.cycle_results.append(result_for_one_test_run)
 
 
-class Testwanger:
+class Observable(object):
 
-    def __init__(
-        self,
-        tests_file_path,
-        requested_cycles,
-        failure_focus,
-        pytest_python,
-        pytest_echo,
-        pytest_json_path,
-        pytest_extra_args,
-    ):
+    def __init__(self):
         self._observers = []
-        self.tests_file_path = tests_file_path
-        self.requested_cycles = requested_cycles
-        self.failure_focus = failure_focus
-        self.pytest_python = pytest_python
-        self.pytest_echo = pytest_echo
-        self.pytest_json_path = pytest_json_path
-        self.pytest_extra_args = pytest_extra_args
 
     def register(self, observer):
         self._observers.append(observer)
@@ -115,6 +99,18 @@ class Testwanger:
                     raise NotImplementedError((observer, fn_name))
             fn(*args, **kwargs)
 
+    def copy_observers_to(self, other):
+        for observer in self._observers:
+            other.register(observer)
+
+
+class Testwanger(Observable):
+
+    def __init__(self, collector, runner):
+        super(Testwanger, self).__init__()
+        self.collector = collector
+        self.runner = runner
+
     def testwang(self):
         start = time.time()
         tests, results, actual_cycles = self.collect_and_run_tests()
@@ -128,23 +124,31 @@ class Testwanger:
         )
 
     def collect_and_run_tests(self):
-        tests = self.collect_tests()
+        tests = self.collector.collect_tests()
         if not tests:
             self.notify('no_tests_found')
             return
-        results, actual_cycles = self.run_tests(tests)
+        results, actual_cycles = self.runner.run_tests(tests)
         return tests, results, actual_cycles
+
+
+class TestCollector(Observable):
+
+    def __init__(self, tests_file_path):
+        super(TestCollector, self).__init__()
+        self.tests_file_path = tests_file_path
 
     def collect_tests(self):
         self.notify('collecting_tests', self.tests_file_path)
         tests = self.convert_jenkins_test_specs_to_pytest_format(
-            self.get_tests_to_examine(),
+            self.get_tests_to_examine(self.tests_file_path),
         )
         self.notify('collected_tests', tests)
         return tests
 
-    def get_tests_to_examine(self):
-        with io.open(self.tests_file_path, encoding='utf-8') as infile:
+    @staticmethod
+    def get_tests_to_examine(tests_file_path):
+        with io.open(tests_file_path, encoding='utf-8') as infile:
             lines = [line.strip() for line in infile.readlines()]
         return [
             line for line in lines
@@ -174,6 +178,26 @@ class Testwanger:
                 return prefix
         self.notify('test_not_found', test_path=test_spec_parts)
         raise TestSpecModuleNotFound(test_spec_parts)
+
+
+class TestCyclesRunner(Observable):
+
+    def __init__(
+        self,
+        requested_cycles,
+        failure_focus,
+        pytest_python,
+        pytest_echo,
+        pytest_json_path,
+        pytest_extra_args,
+    ):
+        super(TestCyclesRunner, self).__init__()
+        self.requested_cycles = requested_cycles
+        self.failure_focus = failure_focus
+        self.pytest_python = pytest_python
+        self.pytest_echo = pytest_echo
+        self.pytest_json_path = pytest_json_path
+        self.pytest_extra_args = pytest_extra_args
 
     def run_tests(self, tests):
         results = {
@@ -215,8 +239,8 @@ class Testwanger:
             ]
         return active_tests
 
-    # noinspection PyMethodMayBeStatic
-    def estimate_cycle_time(self, tests, prior_results):
+    @staticmethod
+    def estimate_cycle_time(tests, prior_results):
         return sum(prior_results[test].mean_duration for test in tests)
 
     def run_tests_for_cycle(self, tests, cycle):
@@ -230,7 +254,6 @@ class Testwanger:
         results = self.parse_json_results()
         return duration, results
 
-    # noinspection PyMethodMayBeStatic
     def construct_tests_run_command(self, tests):
         command = [os.path.expanduser(self.pytest_python), '-m', 'pytest']
         command.extend(self.pytest_extra_args)
@@ -238,8 +261,8 @@ class Testwanger:
         command.extend(tests)
         return command
 
-    # noinspection PyMethodMayBeStatic
-    def run_command(self, command, echo):
+    @staticmethod
+    def run_command(command, echo):
         stdout = stderr = None if echo else subprocess.PIPE
         process = subprocess.Popen(
             command,
@@ -258,8 +281,8 @@ class Testwanger:
             for test_json in contents['report']['tests']
         ))
 
-    # noinspection PyMethodMayBeStatic
-    def parse_json_results_one_test(self, test_json):
+    @staticmethod
+    def parse_json_results_one_test(test_json):
         name = test_json['name']
         outcome = test_json['outcome'].upper()
         duration = sum((
@@ -271,7 +294,7 @@ class Testwanger:
 
 
 # noinspection PyMethodMayBeStatic
-class TestwangConsoleOutput:
+class TestwangConsoleOutput(object):
 
     strict = True
 
@@ -366,8 +389,8 @@ class TestwangConsoleOutput:
 
 def main():
     args, pytest_extra_args = parse_args()
-    wanger = Testwanger(
-        tests_file_path=args.tests_file_path,
+    collector = TestCollector(args.tests_file_path)
+    runner = TestCyclesRunner(
         requested_cycles=args.requested_cycles,
         failure_focus=args.failure_focus,
         pytest_python=args.pytest_python,
@@ -375,12 +398,17 @@ def main():
         pytest_json_path=args.pytest_json_path,
         pytest_extra_args=pytest_extra_args,
     )
+    wanger = Testwanger(
+        collector=collector,
+        runner=runner,
+    )
     console_output = TestwangConsoleOutput(
         requested_cycles=args.requested_cycles,
         failure_focus=args.failure_focus,
         report_cycle_detail=args.report_cycles,
     )
-    wanger.register(console_output)
+    for observable in (collector, runner, wanger):
+        observable.register(console_output)
     try:
         wanger.testwang()
     except TestSpecModuleNotFound:

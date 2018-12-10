@@ -3,6 +3,8 @@
 """testwang - a tool for working with randomly-failing tests."""
 
 from __future__ import (
+    absolute_import,
+    division,
     print_function,
     unicode_literals,
 )
@@ -78,110 +80,132 @@ class ResultsForOneTest:
         self.cycle_results.append(result_for_one_test_run)
 
 
-def main():
-    args, pytest_args = parse_args()
-    testwang(args, pytest_args)
+class Testwanger:
 
+    def __init__(
+        self,
+        tests_file_path,
+        requested_cycles,
+        failure_focus,
+        pytest_python,
+        pytest_echo,
+        pytest_json_path,
+        pytest_extra_args,
+    ):
+        self._observers = []
+        self.tests_file_path = tests_file_path
+        self.requested_cycles = requested_cycles
+        self.failure_focus = failure_focus
+        self.pytest_python = pytest_python
+        self.pytest_echo = pytest_echo
+        self.pytest_json_path = pytest_json_path
+        self.pytest_extra_args = pytest_extra_args
 
-def testwang(args, pytest_args):
-    start = time.time()
-    try:
-        tests, results, actual_cycles = collect_and_run_tests(
-            args,
-            pytest_args,
-        )
-    except TestSpecModuleNotFound as ex:
-        print('Test not found: {}'.format(ex.path))
-        sys.exit(1)
-    elapsed = time.time() - start
-    report_overall_results(args, tests, results, actual_cycles, elapsed)
+    def register(self, observer):
+        self._observers.append(observer)
 
+    def notify(self, fn_name, *args, **kwargs):
+        for observer in self._observers:
+            try:
+                fn = getattr(observer, fn_name)
+            except AttributeError:
+                if not getattr(observer, 'strict', True):
+                    continue
+                else:
+                    raise NotImplementedError((observer, fn_name))
+            fn(*args, **kwargs)
 
-def collect_and_run_tests(args, pytest_args):
-    tests = collect_tests(args)
-    if not tests:
-        print('No tests found.')
-        return
-    report_tests_to_run(tests)
-    results, actual_cycles = run_tests(tests, args, pytest_args)
-    return tests, results, actual_cycles
-
-
-def collect_tests(args):
-    print('Collecting tests from {}'.format(
-        unexpand_user(args.tests_file_path))
-    )
-    return convert_jenkins_test_specs_to_pytest_format(
-        get_tests_to_examine(args.tests_file_path),
-    )
-
-
-def get_tests_to_examine(tests_file_path):
-    with io.open(tests_file_path, encoding='utf-8') as infile:
-        lines = [line.strip() for line in infile.readlines()]
-    return [
-        line for line in lines
-        if line and not line.startswith('#')
-    ]
-
-
-def convert_jenkins_test_specs_to_pytest_format(test_specs):
-    return [
-        convert_jenkins_test_spec_to_pytest_format(test_spec)
-        for test_spec in test_specs
-    ]
-
-
-def convert_jenkins_test_spec_to_pytest_format(test_spec):
-    test_spec_parts = test_spec.split('.')
-    module_path_parts = compute_test_spec_module_path_parts(test_spec_parts)
-    test_path_parts = test_spec_parts[len(module_path_parts):]
-    module_path = '/'.join(module_path_parts) + '.py'
-    test_path = '::'.join(test_path_parts)
-    return module_path + '::' + test_path
-
-
-def compute_test_spec_module_path_parts(test_spec_parts):
-    for prefix in sliced_prefixes(test_spec_parts):
-        path = os.path.join(*prefix) + '.py'
-        if os.path.exists(path) and os.path.isfile(path):
-            return prefix
-    raise TestSpecModuleNotFound(test_spec_parts)
-
-
-def sliced_prefixes(slicable):
-    return (slicable[:i] for i in range(1, len(slicable) + 1))
-
-
-def report_tests_to_run(tests):
-    print('\nWill run the following {} tests:\n'.format(len(tests)))
-    for test in tests:
-        print('  ' + test)
-    print('')
-
-
-def run_tests(tests, args, pytest_args):
-    results = {
-        test: ResultsForOneTest() for test in tests
-    }
-    active_tests = list(tests)
-    actual_cycles = 0
-    for cycle in range(args.cycles):
-        if not active_tests:
-            print('No tests to run')
-            break
-        cycle_results = run_and_report_tests_cycle(
-            active_tests,
+    def testwang(self):
+        start = time.time()
+        tests, results, actual_cycles = self.collect_and_run_tests()
+        elapsed = time.time() - start
+        self.notify(
+            'all_cycles_finished',
+            tests,
             results,
-            args,
-            pytest_args,
-            cycle,
+            actual_cycles,
+            elapsed,
         )
-        actual_cycles += 1
+
+    def collect_and_run_tests(self):
+        tests = self.collect_tests()
+        if not tests:
+            self.notify('no_tests_found')
+            return
+        results, actual_cycles = self.run_tests(tests)
+        return tests, results, actual_cycles
+
+    def collect_tests(self):
+        self.notify('collecting_tests', self.tests_file_path)
+        tests = self.convert_jenkins_test_specs_to_pytest_format(
+            self.get_tests_to_examine(),
+        )
+        self.notify('collected_tests', tests)
+        return tests
+
+    def get_tests_to_examine(self):
+        with io.open(self.tests_file_path, encoding='utf-8') as infile:
+            lines = [line.strip() for line in infile.readlines()]
+        return [
+            line for line in lines
+            if line and not line.startswith('#')
+        ]
+
+    def convert_jenkins_test_specs_to_pytest_format(self, test_specs):
+        return [
+            self.convert_jenkins_test_spec_to_pytest_format(test_spec)
+            for test_spec in test_specs
+        ]
+
+    def convert_jenkins_test_spec_to_pytest_format(self, test_spec):
+        test_spec_parts = test_spec.split('.')
+        module_path_parts = self.compute_test_spec_module_path_parts(
+            test_spec_parts,
+        )
+        test_path_parts = test_spec_parts[len(module_path_parts):]
+        module_path = '/'.join(module_path_parts) + '.py'
+        test_path = '::'.join(test_path_parts)
+        return module_path + '::' + test_path
+
+    def compute_test_spec_module_path_parts(self, test_spec_parts):
+        for prefix in sliced_prefixes(test_spec_parts):
+            path = os.path.join(*prefix) + '.py'
+            if os.path.exists(path) and os.path.isfile(path):
+                return prefix
+        self.notify('test_not_found', test_path=test_spec_parts)
+        raise TestSpecModuleNotFound(test_spec_parts)
+
+    def run_tests(self, tests):
+        results = {
+            test: ResultsForOneTest() for test in tests
+        }
+        active_tests = list(tests)
+        actual_cycles = 0
+        for cycle in range(self.requested_cycles):
+            active_tests = self.run_tests_cycle(cycle, active_tests, results)
+            if active_tests:
+                actual_cycles += 1
+            else:
+                break
+        return results, actual_cycles
+
+    def run_tests_cycle(self, cycle, active_tests, results):
+        if not active_tests:
+            self.notify('no_active_tests')
+            return []
+        estimated_cycle_time = self.estimate_cycle_time(active_tests, results)
+        self.notify(
+            'test_cycle_began',
+            cycle,
+            active_tests,
+            estimated_cycle_time,
+        )
+        duration, cycle_results = self.run_tests_for_cycle(active_tests, cycle)
+        self.notify('test_cycle_ended', cycle, duration)
         for test in active_tests:
             if test in cycle_results:
                 results[test].append(cycle_results[test])
-        if args.failure_focus:
+        if self.failure_focus:
             active_tests = [
                 test for test in active_tests
                 if (
@@ -189,138 +213,178 @@ def run_tests(tests, args, pytest_args):
                     or cycle_results[test].outcome != 'PASSED'
                 )
             ]
-    return results, actual_cycles
+        return active_tests
 
+    # noinspection PyMethodMayBeStatic
+    def estimate_cycle_time(self, tests, prior_results):
+        return sum(prior_results[test].mean_duration for test in tests)
 
-def run_and_report_tests_cycle(tests, results, args, pytest_args, cycle):
-    if args.cycles > 1:
-        indent = report_start_of_test_run(
-            tests,
-            results,
-            args.cycles,
-            cycle,
+    def run_tests_for_cycle(self, tests, cycle):
+        command = self.construct_tests_run_command(tests)
+        final_cycle = cycle == self.requested_cycles - 1
+        echoing = (
+            self.pytest_echo == 'ALL'
+            or (self.pytest_echo == 'FINAL' and final_cycle)
         )
-    else:
-        indent = ''
-    duration, results = run_tests_cycle(
-        tests,
-        results,
-        args,
-        pytest_args,
-        cycle,
-    )
-    print(indent + '{:.2f}s for cycle'.format(duration))
-    return results
+        duration, _ = run_timed(self.run_command, command, echo=echoing)
+        results = self.parse_json_results()
+        return duration, results
 
+    # noinspection PyMethodMayBeStatic
+    def construct_tests_run_command(self, tests):
+        command = [os.path.expanduser(self.pytest_python), '-m', 'pytest']
+        command.extend(self.pytest_extra_args)
+        command.append('--json={}'.format(self.pytest_json_path))
+        command.extend(tests)
+        return command
 
-def run_tests_cycle(tests, results, args, pytest_args, cycle):
-    command = construct_tests_run_command(tests, args, pytest_args)
-    final_cycle = cycle == args.cycles - 1
-    echoing = args.echo or (args.echo_final and final_cycle)
-    duration, _ = run_timed(run_command, command, echo=echoing)
-    results = parse_json_results(args.json_path)
-    return duration, results
+    # noinspection PyMethodMayBeStatic
+    def run_command(self, command, echo):
+        stdout = stderr = None if echo else subprocess.PIPE
+        process = subprocess.Popen(
+            command,
+            stdout=stdout,
+            stderr=stderr,
+            env=copy.deepcopy(os.environ),
+        )
+        process.communicate()
+        return process.returncode
 
-
-def report_start_of_test_run(tests, results, cycles, cycle):
-    time_estimate = estimate_cycle_time(tests, results)
-    if cycle > 0:
-        estimate = ', time estimate: {:5.2f}s'.format(time_estimate)
-    else:
-        estimate = ''
-    header = 'Test cycle {:2} of {:2}  --  '.format(cycle + 1, cycles)
-    print('{}{} tests to run{}'.format(header, len(tests), estimate))
-    return ' ' * len(header)
-
-
-def estimate_cycle_time(tests, prior_results):
-    return sum(prior_results[test].mean_duration for test in tests)
-
-
-def construct_tests_run_command(tests, args, pytest_args):
-    command = [os.path.expanduser(args.pytest_python), '-m', 'pytest']
-    command.extend(pytest_args)
-    command.append('--json={}'.format(args.json_path))
-    command.extend(tests)
-    return command
-
-
-def run_command(args, echo):
-    stdout = stderr = None if echo else subprocess.PIPE
-    env = copy.deepcopy(os.environ)
-    process = subprocess.Popen(args, stdout=stdout, stderr=stderr, env=env)
-    process.communicate()
-    return process.returncode
-
-
-def parse_json_results(json_path):
-    with io.open(json_path, encoding='utf-8') as json_file:
-        contents = json.load(json_file)
-    return dict((
-        parse_json_results_one_test(test_json)
-        for test_json in contents['report']['tests']
-    ))
-
-
-def parse_json_results_one_test(test_json):
-    name = test_json['name']
-    outcome = test_json['outcome'].upper()
-    duration = sum((
-        section.get('duration', 0)
-        for section in test_json.values()
-        if isinstance(section, dict)
-    ))
-    return name, ResultForOneTestRun(outcome, duration)
-
-
-def report_overall_results(args, tests, results, actual_cycles, elapsed):
-
-    longest_outcome = max((
-        len(outcome) for outcome in all_test_result_outcomes(results)
-    ))
-    template = '{{:{}}} {{}}s'.format(longest_outcome)
-
-    print('\nRan {} {} of tests in {:5.2f}s\n'.format(
-        actual_cycles,
-        'cycle' if args.cycles == 1 else 'cycles',
-        elapsed,
-    ))
-    for test in tests:
-        test_results = results[test]
-        if args.failure_focus and test_results.overall_outcome != 'FAILED':
-            continue
-        print(template.format(test_results.overall_outcome, test))
-        if args.report_cycles:
-            report_test_cycle_result(
-                test_results,
-                longest_outcome,
-            )
-
-
-def all_test_result_outcomes(results):
-    outcomes = set()
-    for test_result in results.values():
-        outcomes.add(test_result.overall_outcome)
-        for cycle_result in test_result:
-            outcomes.add(cycle_result.outcome)
-    return outcomes
-
-
-def report_test_cycle_result(test_results, longest_outcome):
-
-    def indented(msg):
-        return ' ' * longest_outcome + ' ' + msg
-
-    inner_template = '{{:{}}} {{:5.2f}}s'.format(longest_outcome)
-    for cycle in test_results:
-        print(indented(
-            inner_template.format(cycle.outcome, cycle.duration),
+    def parse_json_results(self):
+        with io.open(self.pytest_json_path, encoding='utf-8') as json_file:
+            contents = json.load(json_file)
+        return dict((
+            self.parse_json_results_one_test(test_json)
+            for test_json in contents['report']['tests']
         ))
-    if len(test_results) > 1:
-        print(indented(indented('{:5.2f}s total, {:5.2f}s mean\n'.format(
-            test_results.total_duration,
-            test_results.mean_duration,
-        ))))
+
+    # noinspection PyMethodMayBeStatic
+    def parse_json_results_one_test(self, test_json):
+        name = test_json['name']
+        outcome = test_json['outcome'].upper()
+        duration = sum((
+            section.get('duration', 0)
+            for section in test_json.values()
+            if isinstance(section, dict)
+        ))
+        return name, ResultForOneTestRun(outcome, duration)
+
+
+# noinspection PyMethodMayBeStatic
+class TestwangConsoleOutput:
+
+    strict = True
+
+    def __init__(self, requested_cycles, failure_focus, report_cycle_detail):
+        self.requested_cycles = requested_cycles
+        self.failure_focus = failure_focus
+        self.report_cycle_detail = report_cycle_detail
+
+    def test_not_found(self, test_path):
+        print('Test not found: {}'.format(test_path))
+
+    def no_tests_found(self):
+        print('No tests found')
+
+    def collecting_tests(self, tests_file_path):
+        print('Collecting tests from {}'.format(unexpand_user(tests_file_path)))
+
+    def collected_tests(self, tests):
+        print('\nWill run the following {} tests:\n'.format(len(tests)))
+        for test in tests:
+            print('  ' + test)
+        print('')
+
+    def no_active_tests(self):
+        print('No tests to run')
+
+    def test_cycle_began(self, cycle, tests, estimated_cycle_time):
+        if estimated_cycle_time:
+            estimate = ', time estimate: {:5.2f}s'.format(estimated_cycle_time)
+        else:
+            estimate = ''
+        header = self._header_for_test_cycle(cycle)
+        print('{}{} tests to run{}'.format(header, len(tests), estimate))
+
+    def _header_for_test_cycle(self, cycle):
+        return 'Test cycle {:2} of {:2}  --  '.format(
+            cycle + 1,
+            self.requested_cycles,
+        )
+
+    def test_cycle_ended(self, cycle, duration):
+        indent = ' ' * len(self._header_for_test_cycle(cycle))
+        print(indent + '{:.2f}s for cycle'.format(duration))
+
+    def all_cycles_finished(self, tests, results, actual_cycles, elapsed):
+
+        longest_outcome = max((
+            len(outcome) for outcome in self._all_test_result_outcomes(results)
+        ))
+        template = '{{:{}}} {{}}s'.format(longest_outcome)
+
+        print('\nRan {} {} of tests in {:5.2f}s\n'.format(
+            actual_cycles,
+            'cycle' if self.requested_cycles == 1 else 'cycles',
+            elapsed,
+        ))
+        for test in tests:
+            test_results = results[test]
+            if self.failure_focus and test_results.overall_outcome != 'FAILED':
+                continue
+            print(template.format(test_results.overall_outcome, test))
+            if self.report_cycle_detail:
+                self.report_test_cycle_result(
+                    test_results,
+                    longest_outcome,
+                )
+
+    def _all_test_result_outcomes(self, results):
+        outcomes = set()
+        for test_result in results.values():
+            outcomes.add(test_result.overall_outcome)
+            for cycle_result in test_result:
+                outcomes.add(cycle_result.outcome)
+        return outcomes
+
+    def report_test_cycle_result(self, test_results, longest_outcome):
+
+        def indented(msg):
+            return ' ' * longest_outcome + ' ' + msg
+
+        inner_template = '{{:{}}} {{:5.2f}}s'.format(longest_outcome)
+        for cycle in test_results:
+            print(indented(
+                inner_template.format(cycle.outcome, cycle.duration),
+            ))
+        if len(test_results) > 1:
+            print(indented(indented('{:5.2f}s total, {:5.2f}s mean\n'.format(
+                test_results.total_duration,
+                test_results.mean_duration,
+            ))))
+
+
+def main():
+    args, pytest_extra_args = parse_args()
+    wanger = Testwanger(
+        tests_file_path=args.tests_file_path,
+        requested_cycles=args.requested_cycles,
+        failure_focus=args.failure_focus,
+        pytest_python=args.pytest_python,
+        pytest_echo=args.pytest_echo,
+        pytest_json_path=args.pytest_json_path,
+        pytest_extra_args=pytest_extra_args,
+    )
+    console_output = TestwangConsoleOutput(
+        requested_cycles=args.requested_cycles,
+        failure_focus=args.failure_focus,
+        report_cycle_detail=args.report_cycles,
+    )
+    wanger.register(console_output)
+    try:
+        wanger.testwang()
+    except TestSpecModuleNotFound:
+        sys.exit(1)
 
 
 def parse_args():
@@ -343,6 +407,7 @@ def parse_args():
     )
     parser.add_argument(
         '-J', '--json-path', metavar='JSON_PATH',
+        dest='pytest_json_path',
         help="""
             File path to store test run results in; by default they are
             stored in a temporary folder and deleted after use. If this
@@ -355,6 +420,7 @@ def parse_args():
         '-N', '--cycles',
         default=1,
         type=positive_int,
+        dest='requested_cycles',
         help='How many times to run the tests; default is just once',
     )
     parser.add_argument(
@@ -391,16 +457,25 @@ def parse_args():
     )
 
     # We will pass any unrecognized args through to pytest
-    args, pytest_args = parser.parse_known_args()
+    args, pytest_extra_args = parser.parse_known_args()
     # In case any of those unrecognized args are env vars, expand them.
-    pytest_args = tuple(itertools.chain(*(
-        os.path.expandvars(arg).split() for arg in pytest_args
-    )))
+    pytest_extra_args = tuple(flatten(
+        os.path.expandvars(arg).split() for arg in pytest_extra_args
+    ))
 
-    if not args.json_path:
-        args.json_path = create_tmp_json_path_and_register_for_cleanup()
+    if not args.pytest_json_path:
+        args.pytest_json_path = create_tmp_json_path_and_register_for_cleanup()
 
-    return args, pytest_args
+    if args.echo:
+        args.pytest_echo = 'ALL'
+    elif args.echo_final:
+        args.pytest_echo = 'FINAL'
+    else:
+        args.pytest_echo = None
+    del args.echo
+    del args.echo_final
+
+    return args, pytest_extra_args
 
 
 def create_tmp_json_path_and_register_for_cleanup():
@@ -425,6 +500,14 @@ def positive_int(x):
 
 def unexpand_user(path):
     return path.replace(os.path.expanduser('~'), '~')
+
+
+def sliced_prefixes(slicable):
+    return (slicable[:i] for i in range(1, len(slicable) + 1))
+
+
+def flatten(iterator):
+    return itertools.chain(*iterator)
 
 
 def run_timed(fn, *args, **kwargs):

@@ -245,6 +245,7 @@ class TestCyclesRunner(Observable):
 
     def run_tests_for_cycle(self, tests, cycle):
         command = self.construct_tests_run_command(tests)
+        self.notify('pytest_command', command)
         final_cycle = cycle == self.requested_cycles - 1
         echoing = (
             self.pytest_echo == 'ALL'
@@ -298,10 +299,21 @@ class TestwangConsoleOutput(object):
 
     strict = True
 
-    def __init__(self, requested_cycles, failure_focus, report_cycle_detail):
+    def __init__(
+        self,
+        requested_cycles,
+        failure_focus,
+        report_cycle_detail,
+        debug=False
+    ):
         self.requested_cycles = requested_cycles
         self.failure_focus = failure_focus
         self.report_cycle_detail = report_cycle_detail
+        self._debug = debug
+
+    def debug(self, *args, **kwargs):
+        if self._debug:
+            print(*args, **kwargs)
 
     def test_not_found(self, test_path):
         print('Test not found: {}'.format(test_path))
@@ -334,6 +346,9 @@ class TestwangConsoleOutput(object):
             cycle + 1,
             self.requested_cycles,
         )
+
+    def pytest_command(self, command):
+        self.debug(' '.join(command))
 
     def test_cycle_ended(self, cycle, duration):
         indent = ' ' * len(self._header_for_test_cycle(cycle))
@@ -406,6 +421,7 @@ def main():
         requested_cycles=args.requested_cycles,
         failure_focus=args.failure_focus,
         report_cycle_detail=args.report_cycles,
+        debug=args.debug,
     )
     for observable in (collector, runner, wanger):
         observable.register(console_output)
@@ -482,6 +498,11 @@ def parse_args():
             test run and suppress output from earlier runs; if running a
             single cycle, this is equivalent to --echo
         """,
+    )
+    parser.add_argument(
+        '--debug',
+        action='store_true',
+        help='Activate debug output',
     )
 
     # We will pass any unrecognized args through to pytest

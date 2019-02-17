@@ -22,9 +22,9 @@ failing tests...  Which are real failures introduced by your branch,
 and which are just random noise?
 
 As a first stab, the
-[jen_compare](https://github.com/gimbo/compare_jenkins) tool can help,
-e.g. by showing you only the tests which failed on your branch's CI
-run but not on `develop`'s last run (say).  So maybe after running
+[jen-compare](https://github.com/gimbo/gentle-jenkins-tools) tool can
+help, e.g. by showing you only the tests which failed on your branch's
+CI run but not on `develop`'s last run (say).  So maybe after running
 that you end up with 4 tests which failed in your branch but not on
 `develop` (at least, not _last time_).
 

@@ -2,12 +2,7 @@
 
 """testwang - a tool for working with randomly-failing tests."""
 
-from __future__ import (
-    absolute_import,
-    division,
-    print_function,
-    unicode_literals,
-)
+from __future__ import absolute_import, division, print_function, unicode_literals
 
 import argparse
 import atexit
@@ -16,6 +11,7 @@ import io
 import itertools
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -104,10 +100,10 @@ class Observable(object):
             other.register(observer)
 
 
-class Testwanger(Observable):
+class Orchestrator(Observable):
 
     def __init__(self, collector, runner):
-        super(Testwanger, self).__init__()
+        super(Orchestrator, self).__init__()
         self.collector = collector
         self.runner = runner
 
@@ -132,17 +128,18 @@ class Testwanger(Observable):
         return tests, results, actual_cycles
 
 
-class TestCollector(Observable):
+class Collector(Observable):
 
     def __init__(self, tests_file_path):
-        super(TestCollector, self).__init__()
+        super(Collector, self).__init__()
         self.tests_file_path = tests_file_path
 
     def collect_tests(self):
         self.notify('collecting_tests', self.tests_file_path)
-        tests = self.convert_jenkins_test_specs_to_pytest_format(
-            self.get_tests_to_examine(self.tests_file_path),
-        )
+        tests = [
+            self.parse_test_spec(test_spec)
+            for test_spec in self.get_tests_to_examine(self.tests_file_path)
+        ]
         self.notify('collected_tests', tests)
         return tests
 
@@ -155,15 +152,44 @@ class TestCollector(Observable):
             if line and not line.startswith('#')
         ]
 
-    def convert_jenkins_test_specs_to_pytest_format(self, test_specs):
-        return [
-            self.convert_jenkins_test_spec_to_pytest_format(test_spec)
-            for test_spec in test_specs
-        ]
+    def parse_test_spec(self, test_spec):
+        try:
+            Collector.parse_pytest_test_spec(test_spec)
+            return test_spec
+        except ValueError:
+            return self.convert_dotted_test_spec_to_pytest_format(test_spec)
 
-    def convert_jenkins_test_spec_to_pytest_format(self, test_spec):
+    @staticmethod
+    def parse_pytest_test_spec(test_spec):
+        pytest_matcher = re.compile(
+            r"""
+            ^                     # Suppose test_spec = foo/bar/fred.py::xx::yy
+            ((?P<path>\S+)\/)*    # fs path part, e.g. foo/bar
+            ((?P<module>\S+).py)  # module name, e.g. fred.py
+            (::(?P<inner>\S+))*   # path within module, e.g. ::xx::yy
+            $
+            """,
+            re.VERBOSE | re.IGNORECASE,
+        )
+        match = pytest_matcher.match(test_spec)
+        if not match:
+            raise ValueError(test_spec)
+        path_group = match.group('path')
+        path = tuple(path_group.split('/')) if path_group else ()
+        module = match.group('module')
+        inner_group = match.group('inner')
+        inner = tuple(inner_group.split('::')) if inner_group else ()
+        return path, module, inner
+
+    @staticmethod
+    def convert_pytest_test_spec_to_dotted_format(test_spec):
+        path, module, inner = Collector.parse_pytest_test_spec(test_spec)
+        return '.'.join(list(path) + [module] + list(inner))
+
+    def convert_dotted_test_spec_to_pytest_format(self, test_spec):
         test_spec_parts = test_spec.split('.')
         module_path_parts = self.compute_test_spec_module_path_parts(
+            test_spec,
             test_spec_parts,
         )
         test_path_parts = test_spec_parts[len(module_path_parts):]
@@ -171,16 +197,16 @@ class TestCollector(Observable):
         test_path = '::'.join(test_path_parts)
         return module_path + '::' + test_path
 
-    def compute_test_spec_module_path_parts(self, test_spec_parts):
+    def compute_test_spec_module_path_parts(self, test_spec, test_spec_parts):
         for prefix in sliced_prefixes(test_spec_parts):
             path = os.path.join(*prefix) + '.py'
             if os.path.exists(path) and os.path.isfile(path):
                 return prefix
-        self.notify('test_not_found', test_path=test_spec_parts)
-        raise TestSpecModuleNotFound(test_spec_parts)
+        self.notify('test_not_found', test_spec=test_spec)
+        raise TestSpecModuleNotFound(test_spec, test_spec_parts)
 
 
-class TestCyclesRunner(Observable):
+class CyclesRunner(Observable):
 
     def __init__(
         self,
@@ -191,7 +217,7 @@ class TestCyclesRunner(Observable):
         pytest_json_path,
         pytest_extra_args,
     ):
-        super(TestCyclesRunner, self).__init__()
+        super(CyclesRunner, self).__init__()
         self.requested_cycles = requested_cycles
         self.failure_focus = failure_focus
         self.pytest_python = pytest_python
@@ -295,7 +321,7 @@ class TestCyclesRunner(Observable):
 
 
 # noinspection PyMethodMayBeStatic
-class TestwangConsoleOutput(object):
+class ConsoleOutput(object):
 
     strict = True
 
@@ -315,8 +341,8 @@ class TestwangConsoleOutput(object):
         if self._debug:
             print(*args, **kwargs)
 
-    def test_not_found(self, test_path):
-        print('Test not found: {}'.format(test_path))
+    def test_not_found(self, test_spec):
+        print('Test not found: {}'.format(test_spec))
 
     def no_tests_found(self):
         print('No tests found')
@@ -359,7 +385,7 @@ class TestwangConsoleOutput(object):
         longest_outcome = max((
             len(outcome) for outcome in self._all_test_result_outcomes(results)
         ))
-        template = '{{:{}}} {{}}s'.format(longest_outcome)
+        template = '{{:{}}} {{}}'.format(longest_outcome)
 
         print('\nRan {} {} of tests in {:5.2f}s\n'.format(
             actual_cycles,
@@ -370,7 +396,10 @@ class TestwangConsoleOutput(object):
             test_results = results[test]
             if self.failure_focus and test_results.overall_outcome != 'FAILED':
                 continue
-            print(template.format(test_results.overall_outcome, test))
+            print(template.format(
+                test_results.overall_outcome,
+                Collector.convert_pytest_test_spec_to_dotted_format(test),
+            ))
             if self.report_cycle_detail:
                 self.report_test_cycle_result(
                     test_results,
@@ -404,8 +433,10 @@ class TestwangConsoleOutput(object):
 
 def main():
     args, pytest_extra_args = parse_args()
-    collector = TestCollector(args.tests_file_path)
-    runner = TestCyclesRunner(
+    collector = Collector(
+        tests_file_path=args.tests_file_path,
+    )
+    runner = CyclesRunner(
         requested_cycles=args.requested_cycles,
         failure_focus=args.failure_focus,
         pytest_python=args.pytest_python,
@@ -413,20 +444,20 @@ def main():
         pytest_json_path=args.pytest_json_path,
         pytest_extra_args=pytest_extra_args,
     )
-    wanger = Testwanger(
+    orchestrator = Orchestrator(
         collector=collector,
         runner=runner,
     )
-    console_output = TestwangConsoleOutput(
+    console_output = ConsoleOutput(
         requested_cycles=args.requested_cycles,
         failure_focus=args.failure_focus,
         report_cycle_detail=args.report_cycles,
         debug=args.debug,
     )
-    for observable in (collector, runner, wanger):
+    for observable in (collector, runner, orchestrator):
         observable.register(console_output)
     try:
-        wanger.testwang()
+        orchestrator.testwang()
     except TestSpecModuleNotFound:
         sys.exit(1)
 
